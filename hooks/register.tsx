@@ -184,6 +184,30 @@ main()
 
 const USAGE = 'Usage: /find-session <term> [limit]. Example: /find-session dialog 30'
 
+// "<term words> [limit]": a trailing number is the limit when a term precedes it.
+function parseArgs(args: string): { term: string; limit?: number } {
+  const words = args.trim().split(/\s+/).filter(Boolean)
+  const last = words[words.length - 1] ?? ''
+  const limit = words.length > 1 && /^\d+$/.test(last) ? Number(words.pop()) : undefined
+
+  return { term: words.join(' '), limit }
+}
+
+// Splits a line around each case-insensitive match of the term.
+function splitMatches(line: string, term: string): { text: string; isMatch: boolean }[] {
+  const parts: { text: string; isMatch: boolean }[] = []
+  const lower = line.toLowerCase()
+  let from = 0
+  for (let at = lower.indexOf(term); term && at !== -1; at = lower.indexOf(term, from)) {
+    if (at > from) parts.push({ text: line.slice(from, at), isMatch: false })
+    parts.push({ text: line.slice(at, at + term.length), isMatch: true })
+    from = at + term.length
+  }
+  if (from < line.length) parts.push({ text: line.slice(from), isMatch: false })
+
+  return parts
+}
+
 export const register: Register = (on, options) => {
   const claudeDirs = Array.isArray(options.claudeDirs) ? options.claudeDirs : []
   const codexDir = typeof options.codexDir === 'string' ? options.codexDir : ''
@@ -200,10 +224,7 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'find-session' }, async ($, e) => {
-    const words = e.args.trim().split(/\s+/).filter(Boolean)
-    const last = words[words.length - 1] ?? ''
-    const limit = words.length > 1 && /^\d+$/.test(last) ? Number(words.pop()) : defaultLimit
-    const term = words.join(' ')
+    const { term, limit = defaultLimit } = parseArgs(e.args)
     if (!term) return { text: USAGE }
 
     const config = {
@@ -221,5 +242,33 @@ export const register: Register = (on, options) => {
     if (exitCode !== 0) return { text: `find-session failed (exit ${exitCode}):\n${stderr.trim()}` }
 
     return { text: stdout.trimEnd() }
+  })
+
+  // Draws the output as plain lines, not markdown, so snippets show as written,
+  // with each session's heading in bold and the term highlighted.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'find-session' } }, async ($, e, next) => {
+    if (e.component !== 'CommandOutput' || e.props.isErrored) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const term = parseArgs(e.props.args).term.toLowerCase()
+
+    return (
+      <Box flexDirection="column">
+        {e.props.text.split('\n').map(line => (
+          <Text bold={/^\d{4}-\d\d-\d\d /.test(line)}>
+            {line === ''
+              ? ' '
+              : splitMatches(line, term).map(part =>
+                  part.isMatch ? (
+                    <Text color="warning" bold>
+                      {part.text}
+                    </Text>
+                  ) : (
+                    part.text
+                  ),
+                )}
+          </Text>
+        ))}
+      </Box>
+    )
   })
 }
