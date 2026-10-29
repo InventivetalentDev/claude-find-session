@@ -1,1 +1,36 @@
-{ "name": "find-session", "version": "0.1.0", "description": "Full-text search across Claude Code and Codex sessions in every project, with resume commands" }
+{
+  "name": "find-session",
+  "version": "0.2.0",
+  "description": "Full-text search across Claude Code and Codex sessions in every project, with resume commands",
+  "author": {
+    "name": "Haylee Schäfer"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "claudeDirs": {
+      "type": "string",
+      "multiple": true,
+      "title": "Claude config folders",
+      "description": "Claude Code config folders to search, e.g. ~/.claude. Add =<command> to set the resume launcher: ~/.claude-work=claude-work. Empty: ~/.claude, $CLAUDE_CONFIG_DIR and any other ~/.claude* folder with a projects/ folder.",
+      "default": []
+    },
+    "codexDir": {
+      "type": "string",
+      "title": "Codex sessions folder",
+      "description": "Folder holding Codex session logs. Empty: $CODEX_HOME/sessions, else ~/.codex/sessions. Set to 'off' to skip Codex.",
+      "default": ""
+    },
+    "limit": {
+      "type": "number",
+      "title": "Results shown",
+      "description": "How many sessions to list when no limit is typed after the term.",
+      "default": 15
+    },
+    "python": {
+      "type": "string",
+      "title": "Python command",
+      "description": "Python 3 executable that runs the search, e.g. python on Windows.",
+      "default": "python3"
+    }
+  }
+}

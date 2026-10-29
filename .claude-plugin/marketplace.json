@@ -1,0 +1,5 @@
+{
+  "name": "find-session",
+  "owner": { "name": "Haylee Schäfer" },
+  "plugins": [{ "name": "find-session", "source": "./" }]
+}

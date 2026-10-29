@@ -1,22 +1,65 @@
 import type { Register } from 'claude-code'
 
-// Runs under `python3 -I -` so the module needs no file of its own on disk.
+// Runs as `python3 -I - <config json>` with this text on stdin, so the module
+// needs no file of its own on disk.
 const SEARCH = String.raw`
 # Searches what people and assistants said in Claude Code and Codex sessions.
-# Usage: python3 -I search.py <term> [limit]
 # Tool calls and tool output are skipped, so a term in a file dump doesn't match.
 import glob
 import json
 import os
+import shlex
 import sys
 import time
 
 HOME = os.path.expanduser("~")
-CLAUDE_DIRS = [
-    (os.path.join(HOME, ".claude-hp", "projects"), "claude-hp"),
-    (os.path.join(HOME, ".claude", "projects"), "claude"),
-]
-CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
+DEFAULT_CLAUDE = os.path.realpath(os.path.join(HOME, ".claude"))
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + os.sep) else path
+
+
+def shell_path(path):
+    short = tilde(path)
+    return short if short == shlex.quote(short) or (short.startswith("~/") and " " not in short) \
+        else shlex.quote(path)
+
+
+def claude_dirs(entries, env_dir):
+    # Each entry is "<folder>" or "<folder>=<resume launcher>".
+    found = []
+    if entries:
+        for entry in entries:
+            path, _, launcher = entry.partition("=")
+            found.append((os.path.expanduser(path.strip()), launcher.strip()))
+    else:
+        candidates = [os.path.join(HOME, ".claude")]
+        if env_dir:
+            candidates.append(env_dir)
+        candidates += sorted(glob.glob(os.path.join(HOME, ".claude*")))
+        found = [(path, "") for path in candidates]
+
+    dirs, seen = [], set()
+    for path, launcher in found:
+        real = os.path.realpath(path)
+        if real in seen or not os.path.isdir(os.path.join(real, "projects")):
+            continue
+        seen.add(real)
+        if not launcher:
+            launcher = "claude" if real == DEFAULT_CLAUDE \
+                else "CLAUDE_CONFIG_DIR=" + shell_path(real) + " claude"
+        dirs.append((real, launcher))
+    return dirs
+
+
+def codex_dir(setting):
+    if setting.strip().lower() == "off":
+        return None
+    if setting.strip():
+        return os.path.expanduser(setting.strip())
+    home = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+    return os.path.join(home, "sessions")
 
 
 def snippet(text, term):
@@ -40,15 +83,25 @@ def claude_texts(line):
                 yield "claude", part.get("text") or ""
 
 
+# Text Codex injects as user messages: instructions, environment, its reviewer.
+CODEX_INJECTED = ("<", "# AGENTS.md", "The following is the Codex agent history")
+
+
 def codex_texts(line):
+    # Newer logs keep messages as response_item; older ones as event_msg.
     payload = line.get("payload") or {}
-    if line.get("type") != "event_msg":
-        return
-    if payload.get("type") == "user_message":
+    kind = line.get("type")
+    if kind == "response_item" and payload.get("type") == "message":
+        who = {"user": "you", "assistant": "codex"}.get(payload.get("role"))
+        for part in payload.get("content") or []:
+            text = part.get("text") if isinstance(part, dict) else None
+            if who and text and not (who == "you" and text.startswith(CODEX_INJECTED)):
+                yield who, text
+    elif kind == "event_msg" and payload.get("type") == "user_message":
         text = payload.get("message") or ""
-        if not text.startswith("<"):
+        if not text.startswith(CODEX_INJECTED):
             yield "you", text
-    elif payload.get("type") == "agent_message":
+    elif kind == "event_msg" and payload.get("type") == "agent_message":
         yield "codex", payload.get("message") or ""
 
 
@@ -59,6 +112,7 @@ def scan(path, term, texts):
         return None
     hit = {"path": path, "mtime": os.path.getmtime(path), "cwd": None, "id": None,
            "last": "", "count": 0, "first": None, "firstYou": None}
+    seen = set()
     for raw_line in raw.splitlines():
         try:
             line = json.loads(raw_line)
@@ -73,7 +127,9 @@ def scan(path, term, texts):
         if line.get("type") == "session_meta":
             hit["id"] = (line.get("payload") or {}).get("id")
         for who, text in texts(line):
-            if term in text.lower():
+            # A Codex log can hold the same message in both formats.
+            if term in text.lower() and (who, text) not in seen:
+                seen.add((who, text))
                 hit["count"] += 1
                 found = who + ": " + snippet(text, term)
                 hit["first"] = hit["first"] or found
@@ -83,28 +139,29 @@ def scan(path, term, texts):
 
 
 def main():
-    term = sys.argv[1].lower()
-    limit = int(sys.argv[2]) if len(sys.argv) > 2 else 15
-    exclude = sys.argv[3] if len(sys.argv) > 3 else ""
+    config = json.loads(sys.argv[1])
+    term = config["term"].lower()
+    limit = int(config["limit"])
     hits = []
-    for root, profile in CLAUDE_DIRS:
-        for path in glob.glob(os.path.join(root, "*", "*.jsonl")):
+    for root, launcher in claude_dirs(config["claudeDirs"], config["envClaudeDir"]):
+        for path in glob.glob(os.path.join(root, "projects", "*", "*.jsonl")):
             sid = os.path.basename(path)[:-len(".jsonl")]
-            if sid == exclude:
+            if sid == config["exclude"]:
                 continue
             hit = scan(path, term, claude_texts)
             if hit:
                 hit["id"] = sid
-                cmd = "claude-hp" if profile == "claude-hp" else "claude"
-                hit["source"] = profile
-                hit["resume"] = cmd + " --resume " + sid
+                hit["source"] = os.path.basename(root).lstrip(".") or root
+                hit["resume"] = launcher + " --resume " + sid
                 hits.append(hit)
-    for path in glob.glob(os.path.join(CODEX_DIR, "**", "*.jsonl"), recursive=True):
-        hit = scan(path, term, codex_texts)
-        if hit:
-            hit["source"] = "codex"
-            hit["resume"] = "codex resume " + (hit["id"] or path)
-            hits.append(hit)
+    codex = codex_dir(config["codexDir"])
+    if codex:
+        for path in glob.glob(os.path.join(codex, "**", "*.jsonl"), recursive=True):
+            hit = scan(path, term, codex_texts)
+            if hit:
+                hit["source"] = "codex"
+                hit["resume"] = "codex resume " + (hit["id"] or path)
+                hits.append(hit)
 
     hits.sort(key=lambda h: h["last"] or h["mtime"], reverse=True)
     if not hits:
@@ -115,9 +172,9 @@ def main():
     for h in hits[:limit]:
         when = h["last"][:16].replace("T", " ") + " UTC" if h["last"] else \
             time.strftime("%Y-%m-%d %H:%M", time.localtime(h["mtime"]))
-        cwd = (h["cwd"] or "?").replace(HOME, "~")
-        print(when + "  [" + h["source"] + "]  " + cwd + "  (" + str(h["count"]) + " hit"
-              + ("s" if h["count"] != 1 else "") + ")")
+        cwd = shell_path(h["cwd"]) if h["cwd"] else "?"
+        print(when + "  [" + h["source"] + "]  " + tilde(h["cwd"] or "?") + "  (" + str(h["count"])
+              + " hit" + ("s" if h["count"] != 1 else "") + ")")
         print("  " + (h["firstYou"] or h["first"]))
         print("  cd " + cwd + " && " + h["resume"] + "\n")
 
@@ -127,7 +184,12 @@ main()
 
 const USAGE = 'Usage: /find-session <term> [limit]. Example: /find-session dialog 30'
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const claudeDirs = Array.isArray(options.claudeDirs) ? options.claudeDirs : []
+  const codexDir = typeof options.codexDir === 'string' ? options.codexDir : ''
+  const defaultLimit = typeof options.limit === 'number' ? options.limit : 15
+  const python = typeof options.python === 'string' && options.python ? options.python : 'python3'
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'find-session',
@@ -140,13 +202,20 @@ export const register: Register = on => {
   on('command.run', { command: 'find-session' }, async ($, e) => {
     const words = e.args.trim().split(/\s+/).filter(Boolean)
     const last = words[words.length - 1] ?? ''
-    const limit = words.length > 1 && /^\d+$/.test(last) ? words.pop()! : '15'
+    const limit = words.length > 1 && /^\d+$/.test(last) ? Number(words.pop()) : defaultLimit
     const term = words.join(' ')
     if (!term) return { text: USAGE }
 
-    const own = await $.session.id()
+    const config = {
+      term,
+      limit,
+      exclude: await $.session.id(),
+      claudeDirs,
+      envClaudeDir: (await $.env.get('CLAUDE_CONFIG_DIR')) ?? '',
+      codexDir,
+    }
     const { exitCode, stdout, stderr } = await $.process.run(
-      ['python3', '-I', '-', term, limit, own],
+      [python, '-I', '-', JSON.stringify(config)],
       { stdin: SEARCH, timeoutMs: 120_000 },
     )
     if (exitCode !== 0) return { text: `find-session failed (exit ${exitCode}):\n${stderr.trim()}` }
