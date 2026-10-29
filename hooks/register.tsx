@@ -124,7 +124,8 @@ def scan(path, term, texts):
         if isinstance(stamp, str) and stamp > hit["last"]:
             hit["last"] = stamp
         hit["cwd"] = hit["cwd"] or line.get("cwd") or (line.get("payload") or {}).get("cwd")
-        if line.get("type") == "session_meta":
+        # A subagent's log holds its own session_meta, then its parent's.
+        if line.get("type") == "session_meta" and not hit["id"]:
             hit["id"] = (line.get("payload") or {}).get("id")
         for who, text in texts(line):
             # A Codex log can hold the same message in both formats.

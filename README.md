@@ -36,7 +36,7 @@ Python 3 must be on your `PATH` (it ships with macOS and most Linux distribution
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install find-session --marketplace inventivetalentdev/find-session
+/plugin install find-session --marketplace InventivetalentDev/claude-find-session
 ```
 
 Answer `y` to add the marketplace, then pick a scope.
@@ -44,10 +44,10 @@ Answer `y` to add the marketplace, then pick a scope.
 From a shell:
 
 ```
-claude plugin install find-session --marketplace inventivetalentdev/find-session
+claude plugin install find-session --marketplace InventivetalentDev/claude-find-session
 ```
 
-In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `inventivetalentdev/find-session`, then **Add plugin**.
+In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `InventivetalentDev/claude-find-session`, then **Add plugin**.
 
 ## Settings
 
